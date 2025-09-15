@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高雄市淹水風險儀表板 (v12.7 修正版)</title>
+    <style>
+        :root {
+            --primary-color: #3B82F6; --background-color: #F8F9FA; --text-color: #212529;
+            --card-bg: #FFFFFF; --border-color: #DEE2E6; --danger-high: #DC3545;
+            --danger-mid: #FFC107; --danger-low: #28A745; --success-color: #28A745;
+            --selection-color: #a2d2ff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Microsoft JhengHei';
+            margin: 0; background-color: var(--background-color); color: var(--text-color);
+            display: flex; flex-direction: column; 
+            min-height: 100vh;
+        }
+        /* Header & Main Layout */
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 15px 25px; background-color: var(--card-bg); border-bottom: 1px solid var(--border-color); box-shadow: 0 2px 4px rgba(0,0,0,0.05); flex-shrink: 0; }
+        .header-left { display: flex; align-items: center; gap: 20px; }
+        .header h1 { margin: 0; font-size: 1.6em; white-space: nowrap; }
+        .district-selector { font-size: 1em; padding: 8px; border-radius: 5px; border: 1px solid var(--border-color); }
+        .main-content { display: flex; flex-grow: 1; padding: 20px; gap: 20px; align-items: flex-start; }
+        .left-panel { flex: 65%; display: flex; flex-direction: column; gap: 20px; }
+        .right-panel { flex: 35%; display: flex; flex-direction: column; min-width: 450px; gap: 20px; position: sticky; top: 20px; }
+        .card { background-color: var(--card-bg); border-radius: 8px; border: 1px solid var(--border-color); padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+        
+        /* KPI Cards */
+        .kpi-container { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; flex-shrink: 0; }
+        .kpi-card { padding: 20px; text-align: center; }
+        .kpi-card .value { font-size: 2.2em; font-weight: bold; color: var(--primary-color); }
+        .kpi-card .label { font-size: 1em; color: #6c757d; margin-top: 8px; }
+
+        /* Map Card & Magnifier */
+        .map-card { display: flex; flex-direction: column; flex-grow: 1; }
+        .map-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid var(--border-color); padding-bottom: 15px; }
+        .map-header h4 { margin: 0; font-size: 1.2em; color: var(--text-color); }
+        .map-filters { display: flex; gap: 10px; }
+        .map-filter-btn { padding: 5px 10px; border: none; background: none; color: #6c757d; font-size: 1em; cursor: pointer; border-bottom: 3px solid transparent; transition: all 0.2s ease; }
+        .map-filter-btn.active { color: var(--primary-color); border-bottom-color: var(--primary-color); font-weight: bold; }
+        #map-image-display { min-height: 400px; display: grid; place-items: center; background-color: #e9ecef; border-radius: 5px; position: relative; overflow: hidden; }
+        #map-image-display img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: crosshair; }
+        #magnifier-lens { display: none; position: absolute; border: 3px solid var(--primary-color); border-radius: 50%; width: 200px; height: 200px; background-repeat: no-repeat; pointer-events: none; box-shadow: 0 5px 15px rgba(0,0,0,0.2); z-index: 10; }
+
+        /* Table UI */
+        .table-card { display: flex; flex-direction: column; max-height: calc(100vh - 40px - 250px); overflow: hidden; padding: 20px 0 20px 20px; }
+        .table-container { flex-grow: 1; overflow-y: auto; padding-right: 20px;}
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { padding: 14px 10px; border-bottom: 1px solid var(--border-color); vertical-align: middle; word-wrap: break-word; }
+        thead { position: sticky; top: 0; background-color: #F8F9FA; z-index: 10; }
+        th { background-color: #f1f3f5; font-weight: 600; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.5px; text-align: center; border-top: 1px solid var(--border-color); }
+        tbody tr { transition: background-color 0.15s ease-in-out; }
+        tbody tr:nth-child(even) { background-color: #f8f9fa; }
+        tbody tr.selected-row, tbody tr.selected-row:hover { background-color: #cfe2ff; }
+        tbody tr.assignment-selected { background-color: var(--selection-color) !important; }
+        tbody tr:hover { background-color: #e9ecef; }
+        th:nth-child(1), td:nth-child(1) { width: 33.33%; text-align: center; }
+        th:nth-child(2), td:nth-child(2) { width: 33.33%; text-align: center; }
+        th:nth-child(3), td:nth-child(3) { width: 33.33%; text-align: center; }
+        .risk-level { font-weight: bold; padding: 5px 10px; border-radius: 15px; color: white; display: inline-block; min-width: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-size: 0.9em; }
+        .no-data-row td { text-align: center; padding: 40px; color: #6c757d; }
+        
+        /* Uploader Card */
+        .uploader-card { flex-shrink: 0; }
+        .upload-area { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }
+        .upload-btn { display: flex; align-items: center; justify-content: center; gap: 8px; background-color: var(--card-bg); color: var(--text-color); border: 1px solid var(--border-color); padding: 10px; border-radius: 5px; cursor: pointer; font-size: 0.9em; transition: all 0.2s ease; }
+        .assign-btn-wrapper { display: grid; grid-template-columns: 1fr; gap: 10px;}
+        .assign-btn-wrapper.selection-mode { grid-template-columns: 1fr 1fr; }
+        .assign-btn, .cancel-btn { width: 100%; padding: 12px; font-size: 1.1em; border-radius: 5px; border: none; cursor: pointer; font-weight: bold; }
+        
+        /* Custom Notifications */
+        #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; pointer-events: none; }
+        .toast-message { background-color: rgba(0,0,0,0.75); color: white; padding: 12px 20px; border-radius: 5px; margin-bottom: 10px; opacity: 0; transform: translateX(100%); transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1); font-size: 0.9em; pointer-events: all; }
+    </style>
+</head>
+<body>
+    <input type="file" id="data-uploader" style="display: none;" accept=".csv">
+    <input type="file" id="img-24h-uploader" style="display:none;" accept="image/*" data-type="24h">
+    <input type="file" id="img-12h-uploader" style="display:none;" accept="image/*" data-type="12h">
+    <input type="file" id="img-6h-uploader" style="display:none;" accept="image/*" data-type="6h">
+    <div id="toast-container"></div>
+
+    <header class="header">
+        <div class="header-left">
+            <h1>高雄市淹水風險儀表板</h1>
+            <select id="district-selector" class="district-selector">
+                <option value="仁武區">仁武區</option>
+                <option value="苓雅區">苓雅區</option>
+                <option value="三民區">三民區</option>
+                <option value="鳳山區">鳳山區</option>
+            </select>
+        </div>
+        <button class="upload-btn primary" onclick="showToast('請選擇要上傳的 CSV 點位資料檔'); document.getElementById('data-uploader').click()">更新點位資料 (CSV)</button>
+    </header>
+
+    <main class="main-content">
+        <div class="left-panel">
+            <div class="kpi-container">
+                <div class="card kpi-card"><div class="value" id="total-points">-</div><div class="label">總監測點位數</div></div>
+                <div class="card kpi-card"><div class="value" id="high-risk-points">-</div><div class="label">高風險點位 (危險≥7)</div></div>
+                <div class="card kpi-card"><div class="value" id="total-devices">-</div><div class="label">需關注設備總數</div></div>
+            </div>
+            <div class="card map-card">
+                <div class="map-header">
+                    <h4>示警預測地圖</h4>
+                    <div id="map-controls" class="map-filters">
+                        <button class="map-filter-btn active" data-scenario="24h">24h / 200mm</button>
+                        <button class="map-filter-btn" data-scenario="12h">12h / 300mm</button>
+                        <button class="map-filter-btn" data-scenario="6h">6h / 350mm</button>
+                    </div>
+                </div>
+                <div id="map-image-display">
+                    <div class="placeholder"></div>
+                    <img id="main-simulation-image" style="display:none;">
+                    <div id="magnifier-lens"></div>
+                </div>
+            </div>
+        </div>
+        <div class="right-panel">
+            <div class="card table-card">
+                <h2 id="table-title">點位列表</h2>
+                <div class="table-container">
+                    <table id="points-table">
+                        <thead><tr><th>點位</th><th>危險等級</th><th>設備數</th></tr></thead>
+                        <tbody id="data-table"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div id="uploader-card" class="card uploader-card">
+                <h2>更新淹水模擬圖</h2>
+                <div class="upload-area">
+                    <button class="upload-btn" onclick="showToast('請選擇對應的淹水模擬圖檔'); document.getElementById('img-24h-uploader').click()">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        <span>24h 圖檔</span>
+                    </button>
+                    <button class="upload-btn" onclick="showToast('請選擇對應的淹水模擬圖檔'); document.getElementById('img-12h-uploader').click()">
+                         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        <span>12h 圖檔</span>
+                    </button>
+                    <button class="upload-btn" onclick="showToast('請選擇對應的淹水模擬圖檔'); document.getElementById('img-6h-uploader').click()">
+                         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        <span>6h 圖檔</span>
+                    </button>
+                </div>
+                <div id="assign-btn-wrapper" class="assign-btn-wrapper">
+                    <button id="assign-btn" class="assign-btn" disabled>將圖片指派給選取點位</button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+<script>
+// --- 1. DATA & STATE MANAGEMENT ---
+let districtDatabase = { '仁武區': null, '苓雅區': null, '三民區': null, '鳳山區': null };
+let currentDistrict = '仁武區';
+let currentSelectedPoint = null;
+let currentScenario = '24h';
+let stagedImageUrls = {};
+let isSelectionModeActive = false;
+let assignmentSelection = new Set();
+
+// --- 2. CUSTOM NOTIFICATIONS ---
+function showToast(message, duration = 2000) {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = 'toast-message';
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('show'));
+    const removeToast = () => {
+        toast.classList.remove('show');
+        toast.addEventListener('transitionend', () => toast.remove());
+    };
+    const timeoutId = setTimeout(removeToast, duration);
+    const clickListener = (event) => {
+        if (!toast.contains(event.target)) {
+            clearTimeout(timeoutId);
+            removeToast();
+            document.body.removeEventListener('click', clickListener, true);
+        }
+    };
+    setTimeout(() => document.body.addEventListener('click', clickListener, true), 0);
+}
+async function showConfirm(message) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-overlay';
+        overlay.innerHTML = `<div class="confirm-box"><p>${message}</p><div><button id="confirm-ok" class="confirm-btn-ok">確定</button><button id="confirm-cancel">取消</button></div></div>`;
+        document.body.appendChild(overlay);
+        const cleanup = (result) => { overlay.remove(); resolve(result); };
+        document.getElementById('confirm-ok').onclick = () => cleanup(true);
+        document.getElementById('confirm-cancel').onclick = () => cleanup(false);
+        overlay.onclick = (e) => { if (e.target === overlay) cleanup(false); };
+    });
+}
+
+// --- 3. CORE LOGIC ---
+function updateKpis(data) {
+    document.getElementById('total-points').innerText = data.length || '-';
+    document.getElementById('high-risk-points').innerText = data.filter(d => parseInt(d['危險等級'] || d['淹水危險程度']) >= 7).length || '-';
+    document.getElementById('total-devices').innerText = data.reduce((sum, d) => sum + (parseInt(d['設備數'] || d['設備']) || 0), 0) || '-';
+}
+function loadDistrict(districtName) {
+    currentDistrict = districtName;
+    const districtData = districtDatabase[currentDistrict];
+    const uploaderCard = document.getElementById('uploader-card');
+    const mapControls = document.getElementById('map-controls');
+    if (districtData) {
+        updateKpis(districtData.dashboardData);
+        populateDashboard(districtData.dashboardData);
+        currentSelectedPoint = null;
+        updateMapImage();
+        uploaderCard.classList.remove('controls-disabled');
+        mapControls.classList.remove('controls-disabled');
+    } else {
+        updateKpis([]);
+        document.getElementById('data-table').innerHTML = `<tr class="no-data-row"><td colspan="3">此行政區尚無資料，請點擊右上角上傳點位資料。</td></tr>`;
+        currentSelectedPoint = null;
+        updateMapImage();
+        uploaderCard.classList.add('controls-disabled');
+        mapControls.classList.add('controls-disabled');
+    }
+    if(isSelectionModeActive) exitSelectionMode();
+}
+function populateDashboard(data) {
+    const tableBody = document.getElementById('data-table');
+    tableBody.innerHTML = '';
+    data.forEach(row => {
+        const tr = document.createElement('tr');
+        const pointName = row['點位'] || row['站點'] || row['名稱'];
+        const riskLevel = parseInt(row['危險等級'] || row['淹水危險程度']);
+        const deviceCount = row['設備數'] || row['設備'];
+        tr.dataset.pointName = pointName;
+        let riskColor = 'var(--danger-low)';
+        if (riskLevel >= 7) riskColor = 'var(--danger-high)';
+        else if (riskLevel >= 4) riskColor = 'var(--danger-mid)';
+        tr.innerHTML = `<td>${pointName}</td><td><span class="risk-level" style="background-color: ${riskColor}">${riskLevel}</span></td><td>${deviceCount}</td>`;
+        tr.addEventListener('click', () => {
+            if (isSelectionModeActive) { toggleAssignmentSelection(pointName, tr); } else { selectPoint(pointName); }
+        });
+        tableBody.appendChild(tr);
+    });
+}
+function selectPoint(name) {
+    const districtData = districtDatabase[currentDistrict];
+    if (!districtData) return;
+    currentSelectedPoint = districtData.dashboardData.find(p => (p['點位'] || p['站點'] || p['名稱']) === name);
+    document.querySelectorAll('#data-table tr').forEach(tr => { tr.classList.toggle('selected-row', tr.dataset.pointName === name); });
+    updateMapImage();
+}
+function updateMapImage() {
+    const imgEl = document.getElementById('main-simulation-image');
+    const placeholderEl = document.querySelector('#map-image-display .placeholder');
+    const lens = document.getElementById('magnifier-lens');
+    lens.style.display = 'none';
+    if (!currentSelectedPoint) {
+        placeholderEl.innerHTML = districtDatabase[currentDistrict] ? '請從右側列表選擇一個點位' : `<strong>${currentDistrict} (待更新)</strong><br>請上傳點位資料`;
+        imgEl.style.display = 'none';
+        placeholderEl.style.display = 'block';
+        return;
+    }
+    const pointName = currentSelectedPoint['點位'] || currentSelectedPoint['站點'] || currentSelectedPoint['名稱'];
+    const urls = districtDatabase[currentDistrict]?.imageMap.get(pointName);
+    if (urls && urls[currentScenario]) {
+        imgEl.src = urls[currentScenario];
+        imgEl.style.display = 'block';
+        placeholderEl.style.display = 'none';
+    } else {
+        placeholderEl.textContent = `"${pointName}" 暫無此級距(${currentScenario})的模擬圖`;
+        imgEl.style.display = 'none';
+        placeholderEl.style.display = 'block';
+    }
+}
+
+// --- 4. UPLOAD & ASSIGNMENT LOGIC (BUG FIXED) ---
+async function handleDataFile(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const hasExistingData = districtDatabase[currentDistrict] !== null;
+        if (hasExistingData) {
+            const confirmed = await showConfirm(`「${currentDistrict}」已有資料。上傳新資料將清除所有已指派的圖片，確定要覆蓋嗎？`);
+            if (!confirmed) { event.target.value = ''; return; }
+        }
+        try {
+            const lines = e.target.result.split(/\r?\n/).filter(line => line.trim() !== '');
+            if (lines.length < 2) throw new Error("CSV 檔案內容不足");
+            const headers = lines.shift().split(',').map(h => h.trim());
+            const newData = lines.map(line => {
+                const values = line.split(',');
+                return headers.reduce((obj, header, i) => { obj[header] = values[i] ? values[i].trim() : ''; return obj; }, {});
+            });
+            districtDatabase[currentDistrict] = { dashboardData: newData, imageMap: new Map() };
+            loadDistrict(currentDistrict);
+            showToast(`成功為「${currentDistrict}」載入 ${newData.length} 筆新資料！`);
+        } catch (error) { showToast("讀取檔案失敗: " + error.message, 3000); }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+}
+function handleImageFile(event) {
+    const file = event.target.files[0];
+    const type = event.target.dataset.type;
+    if (!file || !type) return;
+    if (!isSelectionModeActive) { enterSelectionMode(); }
+    const reader = new FileReader();
+    reader.onload = (e) => { stagedImageUrls[type] = e.target.result; showToast(`已暫存 ${type} 級距的圖片。`); updateAssignButtonState(); };
+    reader.readAsDataURL(file);
+    event.target.value = '';
+}
+function enterSelectionMode() {
+    isSelectionModeActive = true;
+    document.getElementById('table-title').textContent = '點位列表 (點擊以選取目標點位)';
+    const wrapper = document.getElementById('assign-btn-wrapper');
+    wrapper.classList.add('selection-mode');
+    if (!document.getElementById('cancel-btn')) {
+        const cancelBtn = document.createElement('button');
+        cancelBtn.id = 'cancel-btn';
+        cancelBtn.className = 'cancel-btn';
+        cancelBtn.textContent = '取消選取';
+        cancelBtn.onclick = exitSelectionMode;
+        wrapper.appendChild(cancelBtn);
+    }
+}
+function exitSelectionMode() {
+    isSelectionModeActive = false;
+    assignmentSelection.clear();
+    stagedImageUrls = {};
+    document.getElementById('table-title').textContent = '點位列表';
+    document.querySelectorAll('#data-table tr.assignment-selected').forEach(row => { row.classList.remove('assignment-selected'); });
+    const wrapper = document.getElementById('assign-btn-wrapper');
+    wrapper.classList.remove('selection-mode');
+    const cancelBtn = document.getElementById('cancel-btn');
+    if(cancelBtn) cancelBtn.remove();
+    updateAssignButtonState();
+}
+function toggleAssignmentSelection(pointName, tableRowElement) {
+    if (assignmentSelection.has(pointName)) {
+        assignmentSelection.delete(pointName);
+        tableRowElement.classList.remove('assignment-selected');
+    } else {
+        assignmentSelection.add(pointName);
+        tableRowElement.classList.add('assignment-selected');
+    }
+    updateAssignButtonState();
+}
+function assignImagesToSelected() {
+    if (assignmentSelection.size === 0 || Object.keys(stagedImageUrls).length === 0) return;
+    const currentImageMap = districtDatabase[currentDistrict].imageMap;
+    
+    assignmentSelection.forEach(pointName => {
+        const existingUrls = currentImageMap.get(pointName) || {};
+        const newUrls = { ...existingUrls, ...stagedImageUrls };
+        currentImageMap.set(pointName, newUrls);
+    });
+    
+    showToast(`圖片已上傳完成`);
+    
+    // BUG FIX: Check if the currently displayed point was part of the selection, then update.
+    const currentPointName = currentSelectedPoint ? (currentSelectedPoint['點位'] || currentSelectedPoint['站點'] || currentSelectedPoint['名稱']) : null;
+    if (currentPointName && assignmentSelection.has(currentPointName)) {
+        updateMapImage();
+    }
+    
+    exitSelectionMode();
+}
+function updateAssignButtonState() {
+    const assignBtn = document.getElementById('assign-btn');
+    assignBtn.disabled = !(assignmentSelection.size > 0 && Object.keys(stagedImageUrls).length > 0);
+}
+
+// --- 5. MAGNIFIER LOGIC ---
+function initMagnifier(img, lens, zoom) { /* ... same as before ... */ }
+
+// --- 6. EVENT LISTENERS ---
+document.addEventListener('DOMContentLoaded', () => {
+    loadDistrict(currentDistrict);
+    const mainImage = document.getElementById('main-simulation-image');
+    const lens = document.getElementById('magnifier-lens');
+    mainImage.addEventListener('load', () => { initMagnifier(mainImage, lens, 3); });
+});
+document.getElementById('district-selector').addEventListener('change', (e) => loadDistrict(e.target.value));
+document.getElementById('data-uploader').addEventListener('change', handleDataFile); // Listener re-added
+['img-24h-uploader', 'img-12h-uploader', 'img-6h-uploader'].forEach(id => { document.getElementById(id).addEventListener('change', handleImageFile); });
+document.getElementById('assign-btn').addEventListener('click', assignImagesToSelected);
+document.querySelectorAll('.map-filter-btn').forEach(btn => { btn.addEventListener('click', (e) => {
+    currentScenario = e.target.dataset.scenario;
+    document.querySelectorAll('.map-filter-btn').forEach(b => b.classList.remove('active'));
+    e.target.classList.add('active');
+    updateMapImage();
+}); });
+
+// (Remaining unchanged JS functions for completeness)
+function initMagnifier(img, lens, zoom) {
+    const parent = img.parentElement;
+    let moveMagnifier, showLens, hideLens;
+    const setup = () => {
+        lens.style.backgroundImage = "url('" + img.src + "')";
+        const w = lens.offsetWidth, h = lens.offsetHeight;
+        const { renderedWidth, renderedHeight } = calculateImageRenderInfo();
+        lens.style.backgroundSize = (renderedWidth * zoom) + "px " + (renderedHeight * zoom) + "px";
+        moveMagnifier = (e) => {
+            e.preventDefault();
+            const { renderedWidth, renderedHeight, offsetX, offsetY } = calculateImageRenderInfo();
+            const pos = getCursorPos(e, parent);
+            const cursorOnImgX = pos.x - offsetX, cursorOnImgY = pos.y - offsetY;
+            if (cursorOnImgX < 0 || cursorOnImgX > renderedWidth || cursorOnImgY < 0 || cursorOnImgY > renderedHeight) {
+                hideLens(); return;
+            }
+            showLens();
+            const offset = 15;
+            const containerRect = parent.getBoundingClientRect();
+            let lensX, lensY;
+            if (pos.x < containerRect.width / 2) { lensX = pos.x + offset; } else { lensX = pos.x - w - offset; }
+            if (pos.y < containerRect.height / 2) { lensY = pos.y + offset; } else { lensY = pos.y - h - offset; }
+            lens.style.left = lensX + "px";
+            lens.style.top = lensY + "px";
+            const bgX = - (cursorOnImgX * zoom - w/2);
+            const bgY = - (cursorOnImgY * zoom - h/2);
+            lens.style.backgroundPosition = bgX + "px " + bgY + "px";
+        };
+        showLens = () => { lens.style.display = 'block'; };
+        hideLens = () => { lens.style.display = 'none'; };
+        parent.removeEventListener("mousemove", parent._moveMagnifier); parent.addEventListener("mousemove", moveMagnifier); parent._moveMagnifier = moveMagnifier;
+        parent.removeEventListener("mouseenter", parent._showLens); parent.addEventListener("mouseenter", showLens); parent._showLens = showLens;
+        parent.removeEventListener("mouseleave", parent._hideLens); parent.addEventListener("mouseleave", hideLens); parent._hideLens = hideLens;
+    };
+    const calculateImageRenderInfo = () => {
+        if (!img.naturalWidth) return { renderedWidth: 0, renderedHeight: 0, offsetX: 0, offsetY: 0 };
+        const containerRect = parent.getBoundingClientRect();
+        const ratioImg = img.naturalWidth / img.naturalHeight;
+        const ratioContainer = containerRect.width / containerRect.height;
+        let renderedWidth, renderedHeight, offsetX, offsetY;
+        if (ratioImg > ratioContainer) {
+            renderedWidth = containerRect.width;
+            renderedHeight = renderedWidth / ratioImg;
+            offsetX = 0; offsetY = (containerRect.height - renderedHeight) / 2;
+        } else {
+            renderedHeight = containerRect.height;
+            renderedWidth = renderedHeight * ratioImg;
+            offsetY = 0; offsetX = (containerRect.width - renderedWidth) / 2;
+        }
+        return { renderedWidth, renderedHeight, offsetX, offsetY };
+    };
+    const getCursorPos = (e, target) => {
+        const rect = target.getBoundingClientRect();
+        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    };
+    if (img.complete) setup();
+    else img.onload = setup;
+}
+</script>
+</body>
+</html>
