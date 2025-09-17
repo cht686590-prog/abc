@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>進階 GIS 儀表板 (v17.2 介面優化版)</title>
+    <title>交接箱淹水告警系統</title>
 
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -31,14 +31,17 @@
         #loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2000; display: none; border: 8px solid #f3f3f3; border-radius: 50%; border-top: 8px solid var(--color-primary); width: 60px; height: 60px; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: translate(-50%, -50%) rotate(0deg); } 100% { transform: translate(-50%, -50%) rotate(360deg); } }
         
-        /* Sidebar Layout */
+        /* Sidebar Layout & Point List Styles */
         #point-list-section { flex-grow: 1; display: flex; flex-direction: column; min-height: 250px; }
+        .point-list-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .point-list-header h2 { border: none; padding: 0; margin: 0; }
+        #district-filter { font-size: 0.9em; padding: 5px 8px; border-radius: 4px; border: 1px solid #ccc; }
+        #point-list-table-header { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 8px 10px; background-color: #f8f9fa; font-weight: bold; font-size: 0.8em; color: #6c757d; text-align: center; }
         #point-list { list-style-type: none; padding: 0; margin: 0; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; }
-        #point-list li { padding: 12px 10px; border-bottom: 1px solid #eee; display: grid; grid-template-columns: 1fr 60px 60px; gap: 10px; align-items: center; cursor: pointer; transition: background-color 0.2s; }
+        #point-list li { padding: 12px 10px; border-bottom: 1px solid #eee; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; align-items: center; cursor: pointer; transition: background-color 0.2s; text-align: center; }
         #point-list li:last-child { border-bottom: none; }
         #point-list li:hover { background-color: #f8f9fa; }
         #point-list .point-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        #point-list .point-risk, #point-list .point-devices { text-align: center; font-size: 0.9em; }
         #point-list .point-risk span { display: inline-block; width: 24px; height: 24px; line-height: 24px; border-radius: 50%; color: white; font-weight: bold; }
         .leaflet-tooltip { font-weight: bold; }
     </style>
@@ -49,7 +52,15 @@
             <h1>地圖控制器</h1>
 
             <section id="point-list-section">
-                <h2>點位列表</h2>
+                <div class="point-list-header">
+                    <h2>點位列表</h2>
+                    <select id="district-filter"></select>
+                </div>
+                <div id="point-list-table-header">
+                    <div>點位</div>
+                    <div>危險等級</div>
+                    <div>設備數</div>
+                </div>
                 <ul id="point-list"></ul>
             </section>
 
@@ -84,29 +95,22 @@
 
 <script>
     // --- 1. CONFIG & STATE ---
-    const POINTS_DB_KEY = 'gis_points_data_v2';
-    const LAYERS_DB_KEY = 'gis_layers_data_v2';
-    let currentPoints = [];
+    const POINTS_DB_KEY = 'gis_points_data_v3';
+    const LAYERS_DB_KEY = 'gis_layers_data_v3';
+    const FILTER_KEY = 'gis_district_filter_v1';
+    let allPoints = [];
     let savedLayers = {};
     let currentFloodLayer = null;
     let markerLayerGroup = null;
+    let currentDistrictFilter = '全部行政區';
 
     // --- 2. MAP INITIALIZATION ---
     const tgosMap = L.tileLayer('https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}', { maxZoom: 19, attribution: '&copy; 國土測繪中心' });
     const tgosOrtho = L.tileLayer('https://wmts.nlsc.gov.tw/wmts/PHOTO2/default/GoogleMapsCompatible/{z}/{y}/{x}', { maxZoom: 19, attribution: '&copy; 國土測繪中心' });
     const osmMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' });
 
-    const map = L.map('map', {
-        center: [22.63, 120.32],
-        zoom: 12,
-        layers: [tgosMap] // Default layer
-    });
-
-    const baseLayers = {
-        "臺灣通用電子地圖 (TGOS)": tgosMap,
-        "TGOS 衛星影像圖": tgosOrtho,
-        "OpenStreetMap (標準)": osmMap
-    };
+    const map = L.map('map', { center: [22.63, 120.32], zoom: 12, layers: [tgosMap] });
+    const baseLayers = { "臺灣通用電子地圖 (TGOS)": tgosMap, "TGOS 衛星影像圖": tgosOrtho, "OpenStreetMap (標準)": osmMap };
     
     markerLayerGroup = L.layerGroup().addTo(map);
     L.control.layers(baseLayers).addTo(map);
@@ -118,27 +122,213 @@
     const clearLayersBtn = document.getElementById('clear-layers-btn');
     const pointList = document.getElementById('point-list');
     const loader = document.getElementById('loader');
+    const districtFilter = document.getElementById('district-filter');
 
     // --- 4. DATA PERSISTENCE ---
     function saveData(key, data) { try { localStorage.setItem(key, JSON.stringify(data)); } catch (e) { alert("儲存資料失敗，可能是儲存空間已滿。"); } }
     function loadData(key, defaultValue = null) { const savedData = localStorage.getItem(key); if (savedData) { try { return JSON.parse(savedData); } catch (e) { return defaultValue; } } return defaultValue; }
 
     // --- 5. CORE FUNCTIONS ---
-    function getMarkerIcon(level) { /* ... same as before ... */ }
-    function renderPointList() { /* ... same as before ... */ }
-    function processAndDisplayPoints(pointsData) { /* ... same as before ... */ }
-    function displayLayer(layerName) { /* ... same as before ... */ }
-    function updateLayerDropdown() { /* ... same as before ... */ }
-    function handleShpUpload(event) { /* ... same as before ... */ }
-    function handleCsvUpload(event) { /* ... same as before ... */ }
+    function getMarkerIcon(level) {
+        let color = 'grey';
+        if (level >= 0 && level <= 3) color = 'var(--color-green)';
+        if (level >= 4 && level <= 7) color = 'var(--color-orange)';
+        if (level >= 8 && level <= 10) color = 'var(--color-red)';
+        return L.divIcon({ className: 'custom-div-icon', html: `<div style="background-color:${color};width:16px;height:16px;border-radius:50%;border:2px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.65);"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] });
+    }
+
+    /** Populates the district filter dropdown based on allPoints */
+    function updateDistrictOptions() {
+        const districts = [...new Set(allPoints.map(p => p.district))];
+        districtFilter.innerHTML = '<option value="全部行政區">全部行政區</option>';
+        districts.sort().forEach(district => {
+            if (district) { // Ensure district is not empty
+                const option = document.createElement('option');
+                option.value = district;
+                option.textContent = district;
+                districtFilter.appendChild(option);
+            }
+        });
+        districtFilter.value = currentDistrictFilter;
+    }
+
+    /** Renders points list and map markers based on the current filter */
+    function renderFilteredPoints() {
+        markerLayerGroup.clearLayers();
+        pointList.innerHTML = '';
+        const bounds = [];
+        
+        const filteredPoints = currentDistrictFilter === '全部行政區'
+            ? allPoints
+            : allPoints.filter(p => p.district === currentDistrictFilter);
+
+        if (filteredPoints.length === 0) {
+            pointList.innerHTML = '<li>尚無點位資料</li>';
+            return;
+        }
+
+        filteredPoints.forEach(point => {
+            const li = document.createElement('li');
+            let riskColor = 'grey';
+            if (point.risk >= 0 && point.risk <= 3) riskColor = 'var(--color-green)';
+            if (point.risk >= 4 && point.risk <= 7) riskColor = 'var(--color-orange)';
+            if (point.risk >= 8 && point.risk <= 10) riskColor = 'var(--color-red)';
+            li.innerHTML = `<span class="point-name" title="${point.name}">${point.name}</span><div class="point-risk"><span style="background-color:${riskColor};">${point.risk}</span></div><div class="point-devices">${point.devices}</div>`;
+            li.addEventListener('click', () => {
+                map.flyTo([point.lat, point.lng], 17);
+                markerLayerGroup.eachLayer(layer => {
+                    if (layer.getLatLng().lat === point.lat && layer.getLatLng().lng === point.lng) { layer.openPopup(); }
+                });
+            });
+            pointList.appendChild(li);
+
+            const popupContent = `<b>${point.name}</b><br>危險等級: ${point.risk}<br>設備數: ${point.devices}`;
+            const marker = L.marker([point.lat, point.lng], { icon: getMarkerIcon(point.risk) }).addTo(markerLayerGroup).bindTooltip(popupContent).bindPopup(popupContent);
+            bounds.push([point.lat, point.lng]);
+        });
+
+        if (bounds.length > 0) {
+            map.fitBounds(bounds, { padding: [50, 50] });
+        }
+    }
+
+    /** Processes the full list of points from CSV, then triggers rendering */
+    function processAndDisplayPoints(pointsData) {
+        allPoints = [];
+        pointsData.forEach(p => {
+            const lat = parseFloat(p.lat);
+            const lng = parseFloat(p.lng);
+            if (p.名稱 && !isNaN(lat) && !isNaN(lng)) {
+                allPoints.push({
+                    district: p.行政區, name: p.名稱,
+                    lat: lat, lng: lng,
+                    risk: parseInt(p.危險等級), devices: p.設備數
+                });
+            }
+        });
+        updateDistrictOptions();
+        renderFilteredPoints();
+    }
     
-    // --- 6. INITIALIZATION & EVENT LISTENERS ---
+    function displayLayer(layerName) {
+        if (currentFloodLayer) map.removeLayer(currentFloodLayer);
+        currentFloodLayer = null;
+        if (!layerName || !savedLayers[layerName]) return;
+        const geojsonData = savedLayers[layerName];
+        currentFloodLayer = L.geoJSON(geojsonData, {
+            style: { color: "#007bff", weight: 1, fillColor: "#5c9eff", fillOpacity: 0.5 },
+            onEachFeature: (feature, layer) => {
+                const depth = feature.properties.GRIDCODE || feature.properties.depth;
+                if (depth) layer.bindPopup(`淹水潛勢深度: 約 ${depth} 公尺`);
+            }
+        }).addTo(map);
+    }
+    
+    function updateLayerDropdown() {
+        layerSelect.innerHTML = '<option value="">無圖層</option>';
+        const layerNames = Object.keys(savedLayers);
+        const sortLayerNames = (a, b) => {
+            const getValues = (name) => {
+                const hoursMatch = name.match(/(\d+)[Hh時]/);
+                const mmMatch = name.match(/(\d+)mm/);
+                const hours = hoursMatch ? parseInt(hoursMatch[1]) : Infinity;
+                const mm = mmMatch ? parseInt(mmMatch[1]) : Infinity;
+                return { hours, mm };
+            };
+            const valA = getValues(a); const valB = getValues(b);
+            if (valA.hours !== valB.hours) return valA.hours - valB.hours;
+            return valA.mm - valB.mm;
+        };
+        const sortedLayerNames = layerNames.sort(sortLayerNames);
+        sortedLayerNames.forEach(name => {
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            layerSelect.appendChild(option);
+        });
+    }
+    
+    // --- 6. EVENT HANDLERS ---
+    function handleShpUpload(event) {
+        const files = event.target.files;
+        if (!files.length) return;
+        loader.style.display = 'block';
+        const filePromises = Array.from(files).map(file => {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                const layerName = file.name.replace(/\.(zip|json|geojson)$/i, '');
+                if (file.name.toLowerCase().endsWith('.zip')) {
+                    reader.onload = (e) => shp.parseZip(e.target.result).then(geojson => resolve({ name: layerName, data: geojson })).catch(reject);
+                    reader.readAsArrayBuffer(file);
+                } else {
+                    reader.onload = (e) => {
+                        try { const geojson = JSON.parse(e.target.result); resolve({ name: layerName, data: geojson }); }
+                        catch (err) { reject(err); }
+                    };
+                    reader.readAsText(file);
+                }
+            });
+        });
+        Promise.all(filePromises).then(results => {
+            results.forEach(result => { savedLayers[result.name] = result.data; });
+            saveData(LAYERS_DB_KEY, savedLayers);
+            updateLayerDropdown();
+            alert(`${results.length} 個圖層已成功上傳並儲存！`);
+        }).catch(err => {
+            alert("部分或全部檔案解析失敗，請確認檔案格式正確。");
+            console.error(err);
+        }).finally(() => {
+            loader.style.display = 'none';
+            event.target.value = '';
+        });
+    }
+
+    function handleCsvUpload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const text = e.target.result;
+                const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
+                if (lines.length <= 1) throw new Error('CSV 檔案為空或格式不符！');
+                const headers = lines.shift().toLowerCase().split(',');
+                const requiredHeaders = ['行政區', '名稱', 'lat', 'lng', '危險等級', '設備數'];
+                const headerMap = {};
+                requiredHeaders.forEach(reqHeader => {
+                    const index = headers.findIndex(h => h.includes(reqHeader));
+                    if (index === -1) throw new Error(`CSV 檔案缺少必要的欄位: "${reqHeader}"`);
+                    headerMap[reqHeader] = index;
+                });
+                const newPoints = lines.map(line => {
+                    const values = line.split(',');
+                    return {
+                        '行政區': values[headerMap['行政區']], '名稱': values[headerMap['名稱']],
+                        'lat': values[headerMap['lat']], 'lng': values[headerMap['lng']],
+                        '危險等級': values[headerMap['危險等級']], '設備數': values[headerMap['設備數']],
+                    };
+                });
+                saveData(POINTS_DB_KEY, newPoints);
+                processAndDisplayPoints(newPoints);
+                alert("點位資料已成功上傳並儲存！");
+            } catch(error) {
+                alert(error.message);
+            } finally { event.target.value = ''; }
+        };
+        reader.readAsText(file);
+    }
+    
+    // --- 7. INITIALIZATION & EVENT LISTENERS ---
     document.addEventListener('DOMContentLoaded', () => {
         savedLayers = loadData(LAYERS_DB_KEY, {});
         const savedPoints = loadData(POINTS_DB_KEY, []);
+        currentDistrictFilter = loadData(FILTER_KEY, '全部行政區');
+        
         updateLayerDropdown();
         if (savedPoints.length > 0) {
             processAndDisplayPoints(savedPoints);
+        } else {
+             renderFilteredPoints(); // Render empty state
         }
 
         shpUploader.addEventListener('change', handleShpUpload);
@@ -153,22 +343,12 @@
                 alert("所有圖層已被清空。");
             }
         });
+        districtFilter.addEventListener('change', (e) => {
+            currentDistrictFilter = e.target.value;
+            saveData(FILTER_KEY, currentDistrictFilter);
+            renderFilteredPoints();
+        });
     });
-
-// --- (All other functions included below for completeness) ---
-function getMarkerIcon(level) {
-    let color = 'grey';
-    if (level >= 0 && level <= 3) color = 'var(--color-green)';
-    if (level >= 4 && level <= 7) color = 'var(--color-orange)';
-    if (level >= 8 && level <= 10) color = 'var(--color-red)';
-    return L.divIcon({ className: 'custom-div-icon', html: `<div style="background-color:${color};width:12px;height:12px;border-radius:50%;border:2px solid white;box-shadow:0 0 5px rgba(0,0,0,0.5);"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] });
-}
-function renderPointList() { pointList.innerHTML = ''; if (currentPoints.length === 0) { pointList.innerHTML = '<li>尚無點位</li>'; return; } currentPoints.forEach(point => { const li = document.createElement('li'); let riskColor = 'grey'; if (point.risk >= 0 && point.risk <= 3) riskColor = 'var(--color-green)'; if (point.risk >= 4 && point.risk <= 7) riskColor = 'var(--color-orange)'; if (point.risk >= 8 && point.risk <= 10) riskColor = 'var(--color-red)'; li.innerHTML = `<span class="point-name" title="${point.name}">${point.name}</span><div class="point-risk"><span style="background-color:${riskColor};">${point.risk}</span></div><div class="point-devices">${point.devices}</div>`; li.addEventListener('click', () => { map.flyTo([point.lat, point.lng], 17); markerLayerGroup.eachLayer(layer => { if (layer.getLatLng().lat === point.lat && layer.getLatLng().lng === point.lng) { layer.openPopup(); } }); }); pointList.appendChild(li); }); }
-function processAndDisplayPoints(pointsData) { markerLayerGroup.clearLayers(); currentPoints = []; const bounds = []; pointsData.forEach(p => { const lat = parseFloat(p.lat); const lng = parseFloat(p.lng); const name = p['名稱']; const risk = parseInt(p['危險等級']); const devices = p['設備數']; if (name && !isNaN(lat) && !isNaN(lng)) { const point = { name, lat, lng, risk, devices }; currentPoints.push(point); const popupContent = `<b>${name}</b><br>危險等級: ${risk}<br>設備數: ${devices}`; const marker = L.marker([lat, lng], { icon: getMarkerIcon(risk) }).addTo(markerLayerGroup).bindTooltip(popupContent).bindPopup(popupContent); bounds.push([lat, lng]); } }); renderPointList(); if (bounds.length > 0) { map.fitBounds(bounds, { padding: [50, 50] }); } }
-function displayLayer(layerName) { if (currentFloodLayer) map.removeLayer(currentFloodLayer); currentFloodLayer = null; if (!layerName || !savedLayers[layerName]) return; const geojsonData = savedLayers[layerName]; currentFloodLayer = L.geoJSON(geojsonData, { style: { color: "#007bff", weight: 1, fillColor: "#5c9eff", fillOpacity: 0.5 }, onEachFeature: (feature, layer) => { const depth = feature.properties.GRIDCODE || feature.properties.depth; if (depth) layer.bindPopup(`淹水潛勢深度: 約 ${depth} 公尺`); } }).addTo(map); }
-function updateLayerDropdown() { layerSelect.innerHTML = '<option value="">無圖層</option>'; const layerNames = Object.keys(savedLayers); const sortLayerNames = (a, b) => { const getValues = (name) => { const hoursMatch = name.match(/(\d+)[Hh時]/); const mmMatch = name.match(/(\d+)mm/); const hours = hoursMatch ? parseInt(hoursMatch[1]) : Infinity; const mm = mmMatch ? parseInt(mmMatch[1]) : Infinity; return { hours, mm }; }; const valA = getValues(a); const valB = getValues(b); if (valA.hours !== valB.hours) return valA.hours - valB.hours; return valA.mm - valB.mm; }; const sortedLayerNames = layerNames.sort(sortLayerNames); sortedLayerNames.forEach(name => { const option = document.createElement('option'); option.value = name; option.textContent = name; layerSelect.appendChild(option); }); }
-function handleShpUpload(event) { const files = event.target.files; if (!files.length) return; loader.style.display = 'block'; const filePromises = Array.from(files).map(file => { return new Promise((resolve, reject) => { const reader = new FileReader(); const layerName = file.name.replace(/\.(zip|json|geojson)$/i, ''); if (file.name.toLowerCase().endsWith('.zip')) { reader.onload = (e) => shp.parseZip(e.target.result).then(geojson => resolve({ name: layerName, data: geojson })).catch(reject); reader.readAsArrayBuffer(file); } else { reader.onload = (e) => { try { const geojson = JSON.parse(e.target.result); resolve({ name: layerName, data: geojson }); } catch (err) { reject(err); } }; reader.readAsText(file); } }); }); Promise.all(filePromises).then(results => { results.forEach(result => { savedLayers[result.name] = result.data; }); saveData(LAYERS_DB_KEY, savedLayers); updateLayerDropdown(); alert(`${results.length} 個圖層已成功上傳並儲存！`); }).catch(err => { alert("部分或全部檔案解析失敗，請確認檔案格式正確。"); console.error(err); }).finally(() => { loader.style.display = 'none'; event.target.value = ''; }); }
-function handleCsvUpload(event) { const file = event.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const text = e.target.result; const lines = text.split(/\r?\n/).filter(line => line.trim() !== ''); if (lines.length <= 1) throw new Error('CSV 檔案為空或格式不符！'); const headers = lines.shift().toLowerCase().split(','); const requiredHeaders = ['名稱', 'lat', 'lng', '危險等級', '設備數']; const headerMap = {}; requiredHeaders.forEach(reqHeader => { const index = headers.findIndex(h => h.includes(reqHeader)); if (index === -1) throw new Error(`CSV 檔案缺少必要的欄位: "${reqHeader}"`); headerMap[reqHeader] = index; }); const newPoints = lines.map(line => { const values = line.split(','); return { '名稱': values[headerMap['名稱']], 'lat': values[headerMap['lat']], 'lng': values[headerMap['lng']], '危險等級': values[headerMap['危險等級']], '設備數': values[headerMap['設備數']], }; }); saveData(POINTS_DB_KEY, newPoints); processAndDisplayPoints(newPoints); alert("點位資料已成功上傳並儲存！"); } catch(error) { alert(error.message); } finally { event.target.value = ''; } }; reader.readAsText(file); }
 </script>
 </body>
 </html>
